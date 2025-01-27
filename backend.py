@@ -3,6 +3,8 @@ import requests
 import os
 import time
 from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # Load environment variables from .env file
 load_dotenv()
@@ -15,7 +17,23 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 VERIFY_TOKEN = "my_secure_token"  # Your chosen verify token
 CALLBACK_URL = os.getenv("CALLBACK_URL")  # Publicly accessible URL of your app
-users = {}  # In-memory database for storing user tokens
+DATABASE_URL = os.getenv("DATABASE_URL")  # Heroku provides this automatically
+try:
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+except Exception as e:
+    print(f"Error connecting to the database: {e}")
+    raise
+
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id BIGINT PRIMARY KEY,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT NOT NULL,
+        expires_at BIGINT NOT NULL
+    )
+''')
+conn.commit()
 
 
 @app.route("/auth")
@@ -47,11 +65,12 @@ def callback():
 
     tokens = response.json()
     user_id = tokens["athlete"]["id"]
-    users[user_id] = {
-        "access_token": tokens["access_token"],
-        "refresh_token": tokens["refresh_token"],
-        "expires_at": tokens["expires_at"],
-    }
+    store_user_tokens(
+        user_id=user_id,
+        access_token=tokens["access_token"],
+        refresh_token=tokens["refresh_token"],
+        expires_at=tokens["expires_at"]
+    )
     return jsonify({"message": "Authentication successful!", "user_id": user_id})
 
 
@@ -70,11 +89,12 @@ def refresh_user_token(user_id, tokens):
         )
         if response.status_code == 200:
             refreshed_tokens = response.json()
-            tokens.update({
-                "access_token": refreshed_tokens["access_token"],
-                "refresh_token": refreshed_tokens["refresh_token"],
-                "expires_at": refreshed_tokens["expires_at"],
-            })
+            store_user_tokens(
+                user_id=user_id,
+                access_token=refreshed_tokens["access_token"],
+                refresh_token=refreshed_tokens["refresh_token"],
+                expires_at=refreshed_tokens["expires_at"]
+            )
             print(f"Token refreshed successfully for user {user_id}.")
             return True
         else:
@@ -84,19 +104,43 @@ def refresh_user_token(user_id, tokens):
     return True
 
 
+def store_user_tokens(user_id, access_token, refresh_token, expires_at):
+    """Store or update user tokens in the database."""
+    cursor.execute('''
+        INSERT INTO users (user_id, access_token, refresh_token, expires_at)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (user_id) DO UPDATE
+        SET access_token = EXCLUDED.access_token,
+            refresh_token = EXCLUDED.refresh_token,
+            expires_at = EXCLUDED.expires_at
+    ''', (user_id, access_token, refresh_token, expires_at))
+    conn.commit()
+
+
+def get_user_tokens(user_id):
+    """Retrieve user tokens from the database."""
+    cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
+    return cursor.fetchone()
+
+
+def delete_user_tokens(user_id):
+    """Delete user tokens from the database."""
+    cursor.execute('DELETE FROM users WHERE user_id = %s', (user_id,))
+    conn.commit()
+
+
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     """Handle webhook verification and events."""
     if request.method == "GET":
-        # Webhook verification challenge
+        # Verify webhook registration
         verify_token = request.args.get("hub.verify_token")
         challenge = request.args.get("hub.challenge")
         if verify_token == VERIFY_TOKEN:
             return jsonify({"hub.challenge": challenge}), 200
         return "Verification token mismatch", 403
 
-    if request.method == "POST":
-        # Process webhook events
+    try:
         event = request.json
         print(f"Webhook event received: {event}")
 
@@ -104,14 +148,15 @@ def webhook():
             owner_id = event.get("owner_id")
             activity_id = event.get("object_id")
 
-            if owner_id in users:
-                tokens = users[owner_id]
-                if refresh_user_token(owner_id, tokens):
+            user_tokens = get_user_tokens(owner_id)
+            if user_tokens:
+                if refresh_user_token(owner_id, user_tokens):
                     joke = "Why don’t skeletons fight each other? They don’t have the guts!"
                     response = requests.put(
                         f"https://www.strava.com/api/v3/activities/{activity_id}",
                         headers={
-                            "Authorization": f"Bearer {tokens['access_token']}"},
+                            "Authorization": f"Bearer {user_tokens['access_token']}"
+                        },
                         json={"description": joke},
                     )
                     if response.status_code == 200:
@@ -119,7 +164,16 @@ def webhook():
                     else:
                         print(
                             f"Failed to add joke to activity {activity_id}: {response.json()}")
-        return "Event processed", 200
+    except Exception as e:
+        print(f"Error processing webhook: {e}")
+        return "Error processing event", 500
+
+
+def reconnect_db():
+    global conn, cursor
+    conn.close()
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
 
 
 @app.route("/register-webhook", methods=["POST"])
@@ -136,6 +190,7 @@ def register_webhook():
     }
     response = requests.post(
         "https://www.strava.com/api/v3/push_subscriptions", headers=headers, data=payload)
+    print(f"Webhook registration response: {response.json()}")
     if response.status_code == 201:
         return jsonify(response.json())
     return jsonify({"error": response.json()}), response.status_code
