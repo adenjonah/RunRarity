@@ -6,24 +6,19 @@ from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Initialize Flask app
 app = Flask(__name__)
 
-# Strava API credentials
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-# from .env, fallback if not set
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "my_secure_token")
-CALLBACK_URL = os.getenv("CALLBACK_URL")  # Publicly accessible URL of your app
-DATABASE_URL = os.getenv("DATABASE_URL")  # Heroku provides this automatically
-ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")  # Token for webhook registration
+CALLBACK_URL = os.getenv("CALLBACK_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 
-print(f"CALLBACK_URL: {CALLBACK_URL}")  # For debugging
+print(f"CALLBACK_URL: {CALLBACK_URL}")
 
-# Connect to Postgres DB
 try:
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -31,7 +26,6 @@ except Exception as e:
     print(f"Error connecting to the database: {e}")
     raise
 
-# Create table if not exists
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         user_id BIGINT PRIMARY KEY,
@@ -45,12 +39,23 @@ conn.commit()
 
 @app.route("/")
 def home():
-    return "Welcome to the Strava Integration App!", 200
+    return """
+    <html>
+    <head>
+        <title>Strava Integration</title>
+    </head>
+    <body>
+        <h1>About Strava Integration</h1>
+        <p>This application automatically adds jokes to new Strava activities you upload!<br>
+        Just authorize once, and we'll handle the rest.</p>
+        <a href="/auth"><button>Set up with Strava</button></a>
+    </body>
+    </html>
+    """, 200
 
 
 @app.route("/auth")
 def authorize():
-    """Redirect user to Strava OAuth authorization."""
     if not CALLBACK_URL:
         return jsonify({"error": "CALLBACK_URL is not set"}), 500
 
@@ -64,7 +69,6 @@ def authorize():
 
 @app.route("/auth/callback")
 def callback():
-    """Handle OAuth callback and exchange code for tokens."""
     code = request.args.get("code")
     response = requests.post(
         "https://www.strava.com/api/v3/oauth/token",
@@ -86,15 +90,30 @@ def callback():
         refresh_token=tokens["refresh_token"],
         expires_at=tokens["expires_at"]
     )
+
     # Automatically register the webhook once user has authenticated
-    # This ensures the webhook is always set up.
     register_webhook_internal()
 
-    return jsonify({"message": "Authentication successful! Webhook registered.", "user_id": user_id})
+    # Redirect the user to a success page
+    return redirect("/success")
+
+
+@app.route("/success")
+def success():
+    return """
+    <html>
+    <head>
+        <title>Setup Successful</title>
+    </head>
+    <body>
+        <h1>Strava Setup Complete!</h1>
+        <p>You have successfully authenticated with Strava. We'll take care of the jokes on your future activities!</p>
+    </body>
+    </html>
+    """, 200
 
 
 def store_user_tokens(user_id, access_token, refresh_token, expires_at):
-    """Store or update user tokens in the database."""
     cursor.execute('''
         INSERT INTO users (user_id, access_token, refresh_token, expires_at)
         VALUES (%s, %s, %s, %s)
@@ -107,19 +126,16 @@ def store_user_tokens(user_id, access_token, refresh_token, expires_at):
 
 
 def get_user_tokens(user_id):
-    """Retrieve user tokens from the database."""
     cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
     return cursor.fetchone()
 
 
 def delete_user_tokens(user_id):
-    """Delete user tokens from the database."""
     cursor.execute('DELETE FROM users WHERE user_id = %s', (user_id,))
     conn.commit()
 
 
 def refresh_user_token(user_id, tokens):
-    """Refresh the user's access token if expired."""
     if tokens["expires_at"] < time.time():
         print(f"Refreshing token for user {user_id}...")
         response = requests.post(
@@ -151,7 +167,6 @@ def refresh_user_token(user_id, tokens):
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
-        # Verify webhook registration
         verify_token = request.args.get("hub.verify_token")
         challenge = request.args.get("hub.challenge")
         if verify_token == VERIFY_TOKEN:
@@ -159,7 +174,6 @@ def webhook():
         return "Verification token mismatch", 403
 
     if request.method == "POST":
-        # Process webhook events
         event = request.json
         print(f"Webhook event received: {event}")
 
@@ -174,8 +188,7 @@ def webhook():
                     response = requests.put(
                         f"https://www.strava.com/api/v3/activities/{activity_id}",
                         headers={
-                            "Authorization": f"Bearer {user_tokens['access_token']}"
-                        },
+                            "Authorization": f"Bearer {user_tokens['access_token']}"},
                         json={"description": joke},
                     )
                     if response.status_code == 200:
@@ -188,12 +201,10 @@ def webhook():
 
 @app.route("/register-webhook", methods=["POST"])
 def register_webhook():
-    """Manually register webhook with Strava."""
     return register_webhook_internal()
 
 
 def register_webhook_internal():
-    """Helper function to register webhook silently."""
     payload = {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
