@@ -1,13 +1,14 @@
 from flask import Flask, request, redirect, jsonify
 import requests
 import time
+import os
 
 app = Flask(__name__)
 
 # Strava API credentials
 CLIENT_ID = "123765"
 CLIENT_SECRET = "64ed64764a17c172fbd3feb8d3cce4835da0f9a4"
-REDIRECT_URI = "http://10.207.60.94:5050/auth/callback"
+REDIRECT_URI = "https://imagine-image-190266ff1663.herokuapp.com/auth/callback"
 
 # In-memory database for user tokens
 users = {}
@@ -135,4 +136,6 @@ def add_jokes():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5050, debug=True)
+    # Default to 5000 for local testing
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
