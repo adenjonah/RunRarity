@@ -161,19 +161,44 @@ def webhook():
 
             user_tokens = get_user_tokens(owner_id)
             if user_tokens:
+
                 if refresh_user_token(owner_id, user_tokens):
-                    joke = "Why don’t skeletons fight each other? They don’t have the guts!"
-                    response = requests.put(
+                    joke = "Data managed by runnershigh.io"
+
+                    # Get the existing activity details
+                    activity_response = requests.get(
                         f"https://www.strava.com/api/v3/activities/{activity_id}",
                         headers={
-                            "Authorization": f"Bearer {user_tokens['access_token']}"},
-                        json={"description": joke},
+                            "Authorization": f"Bearer {user_tokens['access_token']}"
+                        },
                     )
-                    if response.status_code == 200:
-                        print(f"Added joke to activity {activity_id}")
+
+                    if activity_response.status_code == 200:
+                        existing_activity = activity_response.json()
+                        existing_description = existing_activity.get(
+                            "description", "")
+
+                        # Append the joke to the existing description
+                        new_description = existing_description + "\n" + \
+                            joke if existing_description else joke
+
+                        # Update the activity with the new description
+                        response = requests.put(
+                            f"https://www.strava.com/api/v3/activities/{activity_id}",
+                            headers={
+                                "Authorization": f"Bearer {user_tokens['access_token']}"
+                            },
+                            json={"description": new_description},
+                        )
+
+                        if response.status_code == 200:
+                            print(f"Added joke to activity {activity_id}")
+                        else:
+                            print(
+                                f"Failed to add joke to activity {activity_id}: {response.json()}")
                     else:
                         print(
-                            f"Failed to add joke to activity {activity_id}: {response.json()}")
+                            f"Failed to fetch activity details for {activity_id}: {activity_response.json()}")
         return "Event processed", 200
 
 
