@@ -193,6 +193,27 @@ def webhook():
 
                         if response.status_code == 200:
                             print(f"Added joke to activity {activity_id}")
+
+                            # Upload an image to the activity
+                            try:
+                                with open("./image.png", "rb") as image_file:
+                                    upload_response = requests.post(
+                                        "https://www.strava.com/api/v3/uploads",
+                                        headers={
+                                            "Authorization": f"Bearer {user_tokens['access_token']}"
+                                        },
+                                        files={"file": image_file},
+                                        data={"activity_id": activity_id},
+                                    )
+
+                                    if upload_response.status_code == 201:
+                                        print(
+                                            f"Successfully added image to activity {activity_id}")
+                                    else:
+                                        print(
+                                            f"Failed to upload image to activity {activity_id}: {upload_response.json()}")
+                            except FileNotFoundError:
+                                print("Image file not found: ./image.png")
                         else:
                             print(
                                 f"Failed to add joke to activity {activity_id}: {response.json()}")
