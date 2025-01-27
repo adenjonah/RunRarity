@@ -5,9 +5,11 @@ import time
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from flask import redirect
 
 # Load environment variables from .env file
 load_dotenv()
+
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -17,6 +19,7 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 VERIFY_TOKEN = "my_secure_token"  # Your chosen verify token
 CALLBACK_URL = os.getenv("CALLBACK_URL")  # Publicly accessible URL of your app
+print(f"CALLBACK_URL: {CALLBACK_URL}")  # Add this for debugging
 DATABASE_URL = os.getenv("DATABASE_URL")  # Heroku provides this automatically
 try:
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -39,12 +42,15 @@ conn.commit()
 @app.route("/auth")
 def authorize():
     """Redirect user to Strava OAuth authorization."""
+    if not CALLBACK_URL:
+        return jsonify({"error": "CALLBACK_URL is not set"}), 500
+
     url = (
         f"https://www.strava.com/oauth/authorize"
         f"?client_id={CLIENT_ID}&response_type=code&redirect_uri={CALLBACK_URL}/auth/callback"
         f"&scope=activity:read_all,activity:write&approval_prompt=auto"
     )
-    return jsonify({"redirect_url": url})
+    return redirect(url)  # Redirect to Strava OAuth page
 
 
 @app.route("/auth/callback")
@@ -127,6 +133,11 @@ def delete_user_tokens(user_id):
     """Delete user tokens from the database."""
     cursor.execute('DELETE FROM users WHERE user_id = %s', (user_id,))
     conn.commit()
+
+
+@app.route("/")
+def home():
+    return "Welcome to the Strava Integration App!", 200
 
 
 @app.route("/webhook", methods=["GET", "POST"])
