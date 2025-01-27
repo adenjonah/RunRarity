@@ -1,33 +1,37 @@
-from flask import Flask, request, redirect, jsonify
+from flask import Flask, request, jsonify
 import requests
-import time
 import os
+import time
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
+
+# Initialize Flask app
 app = Flask(__name__)
 
 # Strava API credentials
-CLIENT_ID = "123765"
-CLIENT_SECRET = "64ed64764a17c172fbd3feb8d3cce4835da0f9a4"
-REDIRECT_URI = "https://imagine-image-190266ff1663.herokuapp.com/auth/callback"
-
-# In-memory database for user tokens
-users = {}
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+VERIFY_TOKEN = "my_secure_token"  # Your chosen verify token
+CALLBACK_URL = os.getenv("CALLBACK_URL")  # Publicly accessible URL of your app
+users = {}  # In-memory database for storing user tokens
 
 
 @app.route("/auth")
 def authorize():
-    # Redirect user to Strava's OAuth page
+    """Redirect user to Strava OAuth authorization."""
     url = (
         f"https://www.strava.com/oauth/authorize"
-        f"?client_id={CLIENT_ID}&response_type=code&redirect_uri={REDIRECT_URI}"
+        f"?client_id={CLIENT_ID}&response_type=code&redirect_uri={CALLBACK_URL}/auth/callback"
         f"&scope=activity:read_all,activity:write&approval_prompt=auto"
     )
-    return redirect(url)
+    return jsonify({"redirect_url": url})
 
 
 @app.route("/auth/callback")
 def callback():
-    # Exchange authorization code for tokens
+    """Handle OAuth callback and exchange code for tokens."""
     code = request.args.get("code")
     response = requests.post(
         "https://www.strava.com/api/v3/oauth/token",
@@ -52,7 +56,7 @@ def callback():
 
 
 def refresh_user_token(user_id, tokens):
-    """Refreshes the user's access token if expired."""
+    """Refresh the user's access token if expired."""
     if tokens["expires_at"] < time.time():
         print(f"Refreshing token for user {user_id}...")
         response = requests.post(
@@ -63,7 +67,6 @@ def refresh_user_token(user_id, tokens):
                 "grant_type": "refresh_token",
                 "refresh_token": tokens["refresh_token"],
             },
-            timeout=10
         )
         if response.status_code == 200:
             refreshed_tokens = response.json()
@@ -73,6 +76,7 @@ def refresh_user_token(user_id, tokens):
                 "expires_at": refreshed_tokens["expires_at"],
             })
             print(f"Token refreshed successfully for user {user_id}.")
+            return True
         else:
             print(
                 f"Failed to refresh token for user {user_id}: {response.json()}")
@@ -80,62 +84,63 @@ def refresh_user_token(user_id, tokens):
     return True
 
 
-@app.route("/add-jokes")
-def add_jokes():
-    for user_id, tokens in users.items():
-        print(f"Processing user {user_id}...")
+@app.route("/webhook", methods=["GET", "POST"])
+def webhook():
+    """Handle webhook verification and events."""
+    if request.method == "GET":
+        # Webhook verification challenge
+        verify_token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if verify_token == VERIFY_TOKEN:
+            return jsonify({"hub.challenge": challenge}), 200
+        return "Verification token mismatch", 403
 
-        # Refresh token if expired
-        if not refresh_user_token(user_id, tokens):
-            continue
+    if request.method == "POST":
+        # Process webhook events
+        event = request.json
+        print(f"Webhook event received: {event}")
 
-        # Fetch user activities
-        print("Fetching activities...")
-        activities_response = requests.get(
-            "https://www.strava.com/api/v3/athlete/activities?per_page=5",
-            headers={"Authorization": f"Bearer {tokens['access_token']}"},
-            timeout=10
-        )
-        if activities_response.status_code != 200:
-            print(
-                f"Failed to fetch activities for user {user_id}: {activities_response.json()}")
-            continue
+        if event.get("aspect_type") == "create" and event.get("object_type") == "activity":
+            owner_id = event.get("owner_id")
+            activity_id = event.get("object_id")
 
-        activities = activities_response.json()
-        print(f"Fetched {len(activities)} activities for user {user_id}.")
+            if owner_id in users:
+                tokens = users[owner_id]
+                if refresh_user_token(owner_id, tokens):
+                    joke = "Why don’t skeletons fight each other? They don’t have the guts!"
+                    response = requests.put(
+                        f"https://www.strava.com/api/v3/activities/{activity_id}",
+                        headers={
+                            "Authorization": f"Bearer {tokens['access_token']}"},
+                        json={"description": joke},
+                    )
+                    if response.status_code == 200:
+                        print(f"Added joke to activity {activity_id}")
+                    else:
+                        print(
+                            f"Failed to add joke to activity {activity_id}: {response.json()}")
+        return "Event processed", 200
 
-        # Update activity descriptions with jokes
-        num = 1
-        for activity in activities:
-            if num == 0:
-                break
 
-            activity_id = activity["id"]
-            current_description = activity.get("description", "")
-            joke = "Why don’t skeletons fight each other? They don’t have the guts!"
-            updated_description = f"{current_description}\nJoke: {joke}"
-            print(f"Updating activity {activity_id} for user {user_id}...")
-
-            update_response = requests.put(
-                f"https://www.strava.com/api/v3/activities/{activity_id}",
-                headers={"Authorization": f"Bearer {tokens['access_token']}"},
-                json={"description": updated_description},
-                timeout=10
-            )
-            if update_response.status_code != 200:
-                print(
-                    f"Failed to update activity {activity_id}: {update_response.json()}")
-                continue
-
-            print(
-                f"Activity {activity_id} updated successfully for user {user_id}.")
-            num -= 1
-
-    print("Finished adding jokes.")
-    return jsonify({"message": "Jokes added to activities!"})
+@app.route("/register-webhook", methods=["POST"])
+def register_webhook():
+    """Register webhook with Strava."""
+    payload = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "callback_url": f"{CALLBACK_URL}/webhook",
+        "verify_token": VERIFY_TOKEN,
+    }
+    headers = {
+        "Authorization": f"Bearer {os.getenv('ACCESS_TOKEN')}"
+    }
+    response = requests.post(
+        "https://www.strava.com/api/v3/push_subscriptions", headers=headers, data=payload)
+    if response.status_code == 201:
+        return jsonify(response.json())
+    return jsonify({"error": response.json()}), response.status_code
 
 
 if __name__ == "__main__":
-    # Default to 5000 for local testing
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5050))
     app.run(host="0.0.0.0", port=port, debug=True)
