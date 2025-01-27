@@ -163,7 +163,7 @@ def webhook():
             if user_tokens:
 
                 if refresh_user_token(owner_id, user_tokens):
-                    joke = "Data managed by runnershigh.io"
+                    joke = "Data managed by runnershigh . io"
 
                     # Get the existing activity details
                     activity_response = requests.get(
@@ -196,6 +196,7 @@ def webhook():
 
                             # Upload an image to the activity
                             try:
+
                                 with open("./image.png", "rb") as image_file:
                                     upload_response = requests.post(
                                         "https://www.strava.com/api/v3/uploads",
@@ -203,7 +204,10 @@ def webhook():
                                             "Authorization": f"Bearer {user_tokens['access_token']}"
                                         },
                                         files={"file": image_file},
-                                        data={"activity_id": activity_id},
+                                        data={
+                                            "activity_id": activity_id,
+                                            "data_type": "photo",  # Required field to specify the type of upload
+                                        },
                                     )
 
                                     if upload_response.status_code == 201:
