@@ -1,3 +1,4 @@
+from flask import send_file
 import json
 from flask import Flask, request, jsonify, redirect, render_template
 import requests
@@ -283,12 +284,32 @@ def grab_activities():
         for act in activities if act.get("type") == "Run"
     ]
 
-    # Save to JSON file
+    # Save JSON file in a temporary location
     json_filename = f"strava_runs_{user_id}.json"
-    with open(json_filename, "w") as f:
+    # Use Heroku's temp storage
+    json_path = os.path.join("/tmp", json_filename)
+    with open(json_path, "w") as f:
         json.dump(run_activities, f, indent=4)
 
-    return jsonify({"message": "Activities saved", "file": json_filename, "activities": run_activities})
+    return jsonify({
+        "message": "Activities saved",
+        "file_url": f"/download-json?user_id={user_id}"
+    })
+
+
+@app.route("/download-json", methods=["GET"])
+def download_json():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "User ID required"}), 400
+
+    json_filename = f"strava_runs_{user_id}.json"
+    json_path = os.path.join("/tmp", json_filename)
+
+    if not os.path.exists(json_path):
+        return jsonify({"error": "File not found"}), 404
+
+    return send_file(json_path, as_attachment=True)
 
 
 if __name__ == "__main__":

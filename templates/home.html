@@ -14,6 +14,11 @@
     </p>
     <a href="/auth"><button>Set up with Strava</button></a>
     <button onclick="fetchActivities()">Grab Activities</button>
+    <br />
+    <a id="downloadLink" href="#" style="display: none" download
+      >Download JSON</a
+    >
+
     <script>
       function fetchActivities() {
         const userId = prompt("Enter your Strava user ID:");
@@ -25,8 +30,9 @@
             if (data.error) {
               alert("Error: " + data.error);
             } else {
-              alert("Activities saved! Check the JSON file.");
-              console.log(data.activities);
+              alert("Activities saved! Click the download link below.");
+              document.getElementById("downloadLink").href = data.file_url;
+              document.getElementById("downloadLink").style.display = "block";
             }
           })
           .catch((error) => console.error("Error:", error));
