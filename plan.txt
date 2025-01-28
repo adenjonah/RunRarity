@@ -1,0 +1,15 @@
+Overview: Take a user's activity and return a rarity
+
+Inputs: 
+- Time of day
+- Location
+- Route (distance, shape, exact geo data)
+- Pace
+
+Rank Each Input on criteria:
+- Time of day (Of activity start)
+    5 (rarest) - Between midnight and 4am
+    4 - Between 10pm and midnight and 4am - 5:30am
+    3 - 8pm - 10pm and 5:30am-6:30am
+    2 - 6:30am-7:30am, 9am-12pm, 1pm-4:30pm
+    1 - 7:30am to 9am, 12-1pm, 4:30-6pm

@@ -1,3 +1,4 @@
+import json
 from flask import Flask, request, jsonify, redirect, render_template
 import requests
 import os
@@ -248,6 +249,46 @@ def register_webhook_internal():
     if response.status_code == 201:
         return jsonify(response.json())
     return jsonify({"error": response.json()}), response.status_code
+
+
+@app.route("/grab-activities", methods=["GET"])
+def grab_activities():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "User ID required"}), 400
+
+    user_tokens = get_user_tokens(user_id)
+    if not user_tokens:
+        return jsonify({"error": "User not authenticated"}), 401
+
+    if not refresh_user_token(user_id, user_tokens):
+        return jsonify({"error": "Failed to refresh access token"}), 500
+
+    access_token = user_tokens["access_token"]
+    url = "https://www.strava.com/api/v3/athlete/activities"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    params = {"per_page": 100, "page": 1}
+
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code != 200:
+        return jsonify({"error": "Failed to fetch activities", "details": response.json()}), 500
+
+    activities = response.json()
+    run_activities = [
+        {
+            "name": act["name"],
+            "link": f"https://www.strava.com/activities/{act['id']}",
+            "polyline": act.get("map", {}).get("summary_polyline", ""),
+        }
+        for act in activities if act.get("type") == "Run"
+    ]
+
+    # Save to JSON file
+    json_filename = f"strava_runs_{user_id}.json"
+    with open(json_filename, "w") as f:
+        json.dump(run_activities, f, indent=4)
+
+    return jsonify({"message": "Activities saved", "file": json_filename, "activities": run_activities})
 
 
 if __name__ == "__main__":

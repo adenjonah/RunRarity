@@ -13,5 +13,24 @@
       Just authorize once, and we'll handle the rest.
     </p>
     <a href="/auth"><button>Set up with Strava</button></a>
+    <button onclick="fetchActivities()">Grab Activities</button>
+    <script>
+      function fetchActivities() {
+        const userId = prompt("Enter your Strava user ID:");
+        if (!userId) return;
+
+        fetch(`/grab-activities?user_id=${userId}`)
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.error) {
+              alert("Error: " + data.error);
+            } else {
+              alert("Activities saved! Check the JSON file.");
+              console.log(data.activities);
+            }
+          })
+          .catch((error) => console.error("Error:", error));
+      }
+    </script>
   </body>
 </html>
