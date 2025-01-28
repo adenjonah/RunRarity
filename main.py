@@ -271,17 +271,22 @@ def grab_activities():
     params = {"per_page": 100, "page": 1}
 
     activities = []
-    while True:
-        response = requests.get(url, headers=headers, params=params)
+    start_time = time.time()  # Start tracking time
+    max_duration = 27  # Maximum duration for the loop in seconds
+
+    while time.time() - start_time < max_duration:
+        response = requests.get(url, headers=headers, params=params, timeout=5)
         if response.status_code != 200:
-            return jsonify({"error": "Failed to fetch activities", "details": response.json()}), 500
+            break  # Exit loop on API error
 
         page_data = response.json()
         if not page_data:
-            break
+            break  # Exit loop when no more data is returned
+
         activities.extend(page_data)
         params["page"] += 1
 
+    # Filter run activities with polylines
     run_activities = [
         {
             "name": act["name"],
@@ -298,7 +303,8 @@ def grab_activities():
         json.dump(run_activities, f, indent=4)
 
     return jsonify({
-        "message": "Activities saved",
+        "message": "Activities fetched within the time limit",
+        "activities_count": len(run_activities),
         "file_url": f"/download-json?user_id={user_id}"
     })
 
