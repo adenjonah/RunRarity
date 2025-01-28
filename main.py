@@ -270,23 +270,29 @@ def grab_activities():
     headers = {"Authorization": f"Bearer {access_token}"}
     params = {"per_page": 100, "page": 1}
 
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code != 200:
-        return jsonify({"error": "Failed to fetch activities", "details": response.json()}), 500
+    activities = []
+    while True:
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            return jsonify({"error": "Failed to fetch activities", "details": response.json()}), 500
 
-    activities = response.json()
+        page_data = response.json()
+        if not page_data:
+            break
+        activities.extend(page_data)
+        params["page"] += 1
+
     run_activities = [
         {
             "name": act["name"],
             "link": f"https://www.strava.com/activities/{act['id']}",
             "polyline": act.get("map", {}).get("summary_polyline", ""),
         }
-        for act in activities if act.get("type") == "Run"
+        for act in activities if act.get("type") == "Run" and act.get("map", {}).get("summary_polyline")
     ]
 
     # Save JSON file in a temporary location
     json_filename = f"strava_runs_{user_id}.json"
-    # Use Heroku's temp storage
     json_path = os.path.join("/tmp", json_filename)
     with open(json_path, "w") as f:
         json.dump(run_activities, f, indent=4)

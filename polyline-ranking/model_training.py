@@ -34,4 +34,4 @@ def train_model(dataset_path):
 
 
 # Example usage
-train_model("polyline_dataset.csv")
+train_model("data/polyline_dataset.csv")
