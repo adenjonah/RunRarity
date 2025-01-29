@@ -1,3 +1,4 @@
 
 .env
 /venv
+/polyline-ranking/data
