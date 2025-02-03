@@ -16,10 +16,10 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Tracking status in memory
-fetch_status = {}  # { user_id: {"in_progress": bool, "done": bool, "file_path": str} }
+# Track fetch progress in memory: fetch_status[user_id] = { "file_path": "...", "in_progress": bool, "done": bool }
+fetch_status = {}
 
-# Init database
+# DB init
 try:
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -39,12 +39,12 @@ conn.commit()
 
 @app.route("/")
 def index():
-    # Simple page with button to start Strava OAuth
     return """
 <html>
   <head><title>Donate Activities</title></head>
   <body>
     <h1>Donate Activities</h1>
+    <p>Click below to authenticate with Strava and donate your run activities (with map).</p>
     <form action="/auth" method="get">
       <button type="submit">Donate Activities</button>
     </form>
@@ -87,74 +87,57 @@ def callback():
     store_tokens(user_id, tokens["access_token"],
                  tokens["refresh_token"], tokens["expires_at"])
 
-    # Redirect to the fetch page with user_id
-    return redirect(f"/fetch?user_id={user_id}")
+    # Initialize fetch status
+    fetch_status[user_id] = {"file_path": "",
+                             "in_progress": False, "done": False}
 
-
-@app.route("/fetch")
-def fetch_page():
-    """
-    This route shows a 30-second countdown and triggers the server 
-    to start fetching the user's activities in the background.
-    """
-    user_id = request.args.get("user_id")
-    if not user_id:
-        return jsonify({"error": "No user_id"}), 400
-
-    # Basic HTML: includes a JS countdown from 30 to 0.
-    # We call /start-fetch (once), then poll /fetch-status to see if done.
+    # Render the countdown page directly
     return f"""
 <html>
   <head>
     <title>Fetching Activities</title>
     <script>
-      let count = 30;
-      let started = false;
+      let countdown = 30;
+      let userId = '{user_id}';
       let intervalId;
+      let started = false;
 
-      function startCountdown() {{
+      function start() {{
         if(!started) {{
           started = true;
-          // Trigger the server to fetch in background
-          fetch('/start-fetch?user_id={user_id}').then(r => r.json()).then(() => {{
-            console.log("Fetch started");
-          }});
+          fetch(`/start-fetch?user_id=${{userId}}`);
         }}
-
         intervalId = setInterval(() => {{
-          if(count <= 0) {{
-            document.getElementById('countdown').innerHTML = "Time's up!";
+          if(countdown <= 0) {{
+            document.getElementById('timer').innerHTML = "Time's up!";
             clearInterval(intervalId);
-            checkDone(); // final check
+            checkDone();
             return;
           }}
-          count--;
+          countdown--;
           document.getElementById(
-              'countdown').innerHTML = count + "s remaining";
+              'timer').innerHTML = countdown + "s remaining";
           checkDone();
         }}, 1000);
       }}
 
       function checkDone() {{
-        fetch('/fetch-status?user_id={user_id}')
-          .then(r => r.json())
-          .then(data => {{
-            if(data.done) {{
-              clearInterval(intervalId);
-              document.getElementById(
-                  'countdown').innerHTML = "Fetch complete!";
-              document.getElementById('downloadBtn').style.display = "inline";
-            }}
-          }});
+        fetch(`/fetch-status?user_id=${{userId}}`)
+        .then(r => r.json())
+        .then(data => {{
+          if(data.done) {{
+            clearInterval(intervalId);
+            document.getElementById('timer').innerHTML = "Fetch complete!";
+            document.getElementById('downloadBtn').style.display = "inline";
+          }}
+        }});
       }}
     </script>
   </head>
-  <body onload="startCountdown()">
+  <body onload="start()">
     <h1>Fetching your run activities</h1>
-    <p id="countdown">Starting...</p>
-    <button id="downloadBtn" style="display:none" onclick="window.location='/download-file?user_id={user_id}'">
-      Download JSON
-    </button>
+    <p id="timer">Starting...</p>
+    <button id="downloadBtn" style="display:none" onclick="window.location='/download-file?user_id={user_id}'">Download JSON</button>
   </body>
 </html>
 """
@@ -162,18 +145,13 @@ def fetch_page():
 
 @app.route("/start-fetch")
 def start_fetch():
-    """
-    Kicks off a background thread to fetch the user's activities
-    if not already in progress.
-    """
     user_id = request.args.get("user_id")
     if not user_id:
         return jsonify({"error": "No user_id"}), 400
 
-    # If there's no record or it's not in progress/done, initialize
     if user_id not in fetch_status:
-        fetch_status[user_id] = {"in_progress": False,
-                                 "done": False, "file_path": ""}
+        fetch_status[user_id] = {"file_path": "",
+                                 "in_progress": False, "done": False}
 
     if not fetch_status[user_id]["in_progress"] and not fetch_status[user_id]["done"]:
         fetch_status[user_id]["in_progress"] = True
@@ -184,7 +162,7 @@ def start_fetch():
 
 
 @app.route("/fetch-status")
-def check_fetch_status():
+def fetch_status_endpoint():
     user_id = request.args.get("user_id")
     if not user_id or user_id not in fetch_status:
         return jsonify({"done": False})
@@ -197,17 +175,17 @@ def download_file():
     if not user_id or user_id not in fetch_status:
         return jsonify({"error": "No file"}), 400
 
-    file_path = fetch_status[user_id]["file_path"]
-    if not file_path or not os.path.exists(file_path):
+    path = fetch_status[user_id]["file_path"]
+    if not path or not os.path.exists(path):
         return jsonify({"error": "File not found"}), 404
 
-    return send_file(file_path, as_attachment=True, download_name=os.path.basename(file_path))
+    return send_file(path, as_attachment=True, download_name=os.path.basename(path))
 
 
 def do_fetch(user_id):
     """
-    Background thread function. Fetch activities up to 29s.
-    Write them to /tmp. Mark status done.
+    Background worker: fetch runs with map for up to 29s, store in /tmp,
+    then mark done in fetch_status.
     """
     try:
         activities = fetch_activities(user_id)
@@ -217,7 +195,7 @@ def do_fetch(user_id):
             json.dump(activities, f, indent=4)
         fetch_status[user_id]["file_path"] = path
     except Exception as e:
-        print(f"Fetch error for user {user_id}: {e}")
+        print("Fetch error:", e)
     finally:
         fetch_status[user_id]["in_progress"] = False
         fetch_status[user_id]["done"] = True
@@ -235,8 +213,8 @@ def fetch_activities(user_id):
     url = "https://www.strava.com/api/v3/athlete/activities"
     params = {"per_page": 100, "page": 1}
     out = []
-    start_time = time.time()
-    while time.time() - start_time < 29:  # 29-second limit
+    start = time.time()
+    while time.time() - start < 29:
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code != 200:
             break
@@ -246,7 +224,7 @@ def fetch_activities(user_id):
         out.extend(chunk)
         params["page"] += 1
 
-    # Filter runs with summary_polyline
+    # Filter runs w/ summary_polyline
     runs = []
     for act in out:
         if act.get("type") == "Run" and act.get("map", {}).get("summary_polyline"):
@@ -259,8 +237,7 @@ def fetch_activities(user_id):
 
 
 def refresh_token_if_needed(user_id, tokens):
-    now = time.time()
-    if tokens["expires_at"] < now:
+    if tokens["expires_at"] < time.time():
         r = requests.post("https://www.strava.com/api/v3/oauth/token", data={
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
@@ -269,12 +246,8 @@ def refresh_token_if_needed(user_id, tokens):
         })
         if r.status_code == 200:
             new_tokens = r.json()
-            store_tokens(
-                user_id,
-                new_tokens["access_token"],
-                new_tokens["refresh_token"],
-                new_tokens["expires_at"]
-            )
+            store_tokens(user_id, new_tokens["access_token"],
+                         new_tokens["refresh_token"], new_tokens["expires_at"])
             return True
         return False
     return True
