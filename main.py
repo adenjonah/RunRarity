@@ -19,13 +19,13 @@ CALLBACK_URL = os.getenv("CALLBACK_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 
-print(f"CALLBACK_URL: {CALLBACK_URL}")
+print("CALLBACK_URL: " + str(CALLBACK_URL))
 
 try:
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cursor = conn.cursor(cursor_factory=RealDictCursor)
 except Exception as e:
-    print(f"Error connecting to the database: {e}")
+    print("Error connecting to the database: " + str(e))
     raise
 
 cursor.execute('''
@@ -66,12 +66,12 @@ def authorize():
         return jsonify({"error": "Missing OAuth configuration"}), 500
 
     url = (
-        f"https://www.strava.com/oauth/authorize"
-        f"?client_id={client_id}"
-        f"&response_type=code"
-        f"&redirect_uri={CALLBACK_URL}/auth/callback"
-        f"&scope=activity:read_all,activity:write"
-        f"&approval_prompt=auto"
+        "https://www.strava.com/oauth/authorize"
+        "?client_id=" + client_id +
+        "&response_type=code" +
+        "&redirect_uri=" + CALLBACK_URL + "/auth/callback" +
+        "&scope=activity:read_all,activity:write" +
+        "&approval_prompt=auto"
     )
     return redirect(url)
 
@@ -106,9 +106,9 @@ def store_tokens(user_id, access_token, refresh_token, expires_at):
         INSERT INTO users (user_id, access_token, refresh_token, expires_at)
         VALUES (%s, %s, %s, %s)
         ON CONFLICT (user_id) DO UPDATE
-        SET access_token=EXCLUDED.access_token,
-            refresh_token=EXCLUDED.refresh_token,
-            expires_at=EXCLUDED.expires_at
+        SET access_token = EXCLUDED.access_token,
+            refresh_token = EXCLUDED.refresh_token,
+            expires_at = EXCLUDED.expires_at
     ''', (user_id, access_token, refresh_token, expires_at))
     conn.commit()
 
@@ -143,8 +143,8 @@ def set_preferences():
     give_data = request.form.get("give_data") == "true"
     cursor.execute('''
         UPDATE users
-        SET add_integration=%s, give_data=%s
-        WHERE user_id=%s
+        SET add_integration = %s, give_data = %s
+        WHERE user_id = %s
     ''', (add_integration, give_data, user_id))
     conn.commit()
     return jsonify({"message": "Preferences updated"})
@@ -162,22 +162,27 @@ def webhook():
         activity_id = event.get("object_id")
         user_tokens = get_tokens(owner_id)
         if user_tokens and refresh_token_if_needed(owner_id, user_tokens):
-            act_req = requests.get(f"https://www.strava.com/api/v3/activities/{activity_id}",
-                                   headers={"Authorization": f"Bearer {user_tokens['access_token']}"})
+            act_url = "https://www.strava.com/api/v3/activities/" + \
+                str(activity_id)
+            headers = {"Authorization": "Bearer " +
+                       user_tokens["access_token"]}
+            act_req = requests.get(act_url, headers=headers)
             if act_req.status_code == 200:
                 act_data = act_req.json()
                 if user_tokens["add_integration"]:
                     desc = act_data.get("description", "")
                     new_desc = desc + ("\n" if desc else "") + \
                         "Data managed by runnershigh.io"
-                    requests.put(f"https://www.strava.com/api/v3/activities/{activity_id}",
-                                 headers={"Authorization": f"Bearer {
-                                     user_tokens['access_token']}"},
+                    put_url = "https://www.strava.com/api/v3/activities/" + \
+                        str(activity_id)
+                    put_headers = {"Authorization": "Bearer " +
+                                   user_tokens["access_token"]}
+                    requests.put(put_url, headers=put_headers,
                                  json={"description": new_desc})
                 if user_tokens["give_data"]:
                     cursor.execute('''
                         INSERT INTO user_activities (user_id, activity_id, name, distance, start_date)
-                        VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
+                        VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                     ''', (owner_id, activity_id, act_data.get("name", ""),
                           act_data.get("distance", 0), act_data.get("start_date")))
                     conn.commit()
@@ -193,10 +198,10 @@ def register_webhook_internal():
     payload = {
         "client_id": DEFAULT_CLIENT_ID,
         "client_secret": CLIENT_SECRET,
-        "callback_url": f"{CALLBACK_URL}/webhook",
+        "callback_url": CALLBACK_URL + "/webhook",
         "verify_token": VERIFY_TOKEN
     }
-    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+    headers = {"Authorization": "Bearer " + ACCESS_TOKEN}
     r = requests.post(
         "https://www.strava.com/api/v3/push_subscriptions", headers=headers, data=payload)
     if r.status_code == 201:
@@ -217,7 +222,7 @@ def grab_activities():
         return jsonify({"error": "Refresh token failed"}), 500
     access_token = user_tokens["access_token"]
     url = "https://www.strava.com/api/v3/athlete/activities"
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {"Authorization": "Bearer " + access_token}
     params = {"per_page": 100, "page": 1}
 
     activities = []
@@ -234,18 +239,18 @@ def grab_activities():
 
     run_activities = [{
         "name": x["name"],
-        "link": f"https://www.strava.com/activities/{x['id']}",
+        "link": "https://www.strava.com/activities/" + str(x["id"]),
         "polyline": x.get("map", {}).get("summary_polyline", "")
     } for x in activities if x.get("type") == "Run" and x.get("map", {}).get("summary_polyline")]
 
-    fname = f"strava_runs_{user_id}.json"
+    fname = "strava_runs_" + str(user_id) + ".json"
     path = os.path.join("/tmp", fname)
     with open(path, "w") as f:
         json.dump(run_activities, f, indent=4)
     return jsonify({
         "message": "Activities fetched",
         "activities_count": len(run_activities),
-        "file_url": f"/download-json?user_id={user_id}"
+        "file_url": "/download-json?user_id=" + str(user_id)
     })
 
 
@@ -254,7 +259,7 @@ def download_json():
     user_id = request.args.get("user_id")
     if not user_id:
         return jsonify({"error": "User ID required"}), 400
-    fname = f"strava_runs_{user_id}.json"
+    fname = "strava_runs_" + str(user_id) + ".json"
     path = os.path.join("/tmp", fname)
     if not os.path.exists(path):
         return jsonify({"error": "File not found"}), 404
