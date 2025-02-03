@@ -1,6 +1,5 @@
-from flask import send_file
+from flask import send_file, Flask, request, jsonify, redirect, render_template
 import json
-from flask import Flask, request, jsonify, redirect, render_template
 import requests
 import os
 import time
@@ -12,7 +11,8 @@ load_dotenv()
 
 app = Flask(__name__)
 
-CLIENT_ID = os.getenv("CLIENT_ID")
+# If you don't have a fixed client ID, you can let the user supply it.
+DEFAULT_CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "my_secure_token")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
@@ -54,16 +54,25 @@ conn.commit()
 
 @app.route("/")
 def home():
-    return render_template("home.html", client_id=CLIENT_ID)
+    # Pass along the default (if any) so the template can allow editing
+    return render_template("home.html", client_id=DEFAULT_CLIENT_ID)
 
 
 @app.route("/auth")
 def authorize():
-    if not CALLBACK_URL:
-        return jsonify({"error": "No callback set"}), 500
-    url = (f"https://www.strava.com/oauth/authorize"
-           f"?client_id={CLIENT_ID}&response_type=code&redirect_uri={CALLBACK_URL}/auth/callback"
-           f"&scope=activity:read_all,activity:write&approval_prompt=auto")
+    # Allow client_id to be supplied in the URL (e.g. /auth?client_id=123456)
+    client_id = request.args.get("client_id", DEFAULT_CLIENT_ID)
+    if not client_id or not CALLBACK_URL:
+        return jsonify({"error": "Missing OAuth configuration"}), 500
+
+    url = (
+        f"https://www.strava.com/oauth/authorize"
+        f"?client_id={client_id}"
+        f"&response_type=code"
+        f"&redirect_uri={CALLBACK_URL}/auth/callback"
+        f"&scope=activity:read_all,activity:write"
+        f"&approval_prompt=auto"
+    )
     return redirect(url)
 
 
@@ -71,7 +80,7 @@ def authorize():
 def callback():
     code = request.args.get("code")
     r = requests.post("https://www.strava.com/api/v3/oauth/token", data={
-        "client_id": CLIENT_ID,
+        "client_id": DEFAULT_CLIENT_ID,
         "client_secret": CLIENT_SECRET,
         "code": code,
         "grant_type": "authorization_code",
@@ -109,10 +118,10 @@ def get_tokens(user_id):
     return cursor.fetchone()
 
 
-def refresh_token(user_id, tokens):
+def refresh_token_if_needed(user_id, tokens):
     if tokens["expires_at"] < time.time():
         r = requests.post("https://www.strava.com/api/v3/oauth/token", data={
-            "client_id": CLIENT_ID,
+            "client_id": DEFAULT_CLIENT_ID,
             "client_secret": CLIENT_SECRET,
             "grant_type": "refresh_token",
             "refresh_token": tokens["refresh_token"]
@@ -152,18 +161,18 @@ def webhook():
         owner_id = event.get("owner_id")
         activity_id = event.get("object_id")
         user_tokens = get_tokens(owner_id)
-        if user_tokens and refresh_token(owner_id, user_tokens):
+        if user_tokens and refresh_token_if_needed(owner_id, user_tokens):
             act_req = requests.get(f"https://www.strava.com/api/v3/activities/{activity_id}",
                                    headers={"Authorization": f"Bearer {user_tokens['access_token']}"})
             if act_req.status_code == 200:
                 act_data = act_req.json()
                 if user_tokens["add_integration"]:
                     desc = act_data.get("description", "")
-                    new_desc = desc+("\n" if desc else "") + \
-                        "Data managed by runnershigh . io"
+                    new_desc = desc + ("\n" if desc else "") + \
+                        "Data managed by runnershigh.io"
                     requests.put(f"https://www.strava.com/api/v3/activities/{activity_id}",
-                                 headers={
-                                     "Authorization": f"Bearer {user_tokens['access_token']}"},
+                                 headers={"Authorization": f"Bearer {
+                                     user_tokens['access_token']}"},
                                  json={"description": new_desc})
                 if user_tokens["give_data"]:
                     cursor.execute('''
@@ -182,7 +191,7 @@ def register_webhook():
 
 def register_webhook_internal():
     payload = {
-        "client_id": CLIENT_ID,
+        "client_id": DEFAULT_CLIENT_ID,
         "client_secret": CLIENT_SECRET,
         "callback_url": f"{CALLBACK_URL}/webhook",
         "verify_token": VERIFY_TOKEN
@@ -190,8 +199,10 @@ def register_webhook_internal():
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
     r = requests.post(
         "https://www.strava.com/api/v3/push_subscriptions", headers=headers, data=payload)
-    return (jsonify(r.json()) if r.status_code == 201
-            else (jsonify({"error": r.json()}), r.status_code))
+    if r.status_code == 201:
+        return jsonify(r.json())
+    else:
+        return jsonify({"error": r.json()}), r.status_code
 
 
 @app.route("/grab-activities", methods=["GET"])
@@ -202,7 +213,7 @@ def grab_activities():
     user_tokens = get_tokens(user_id)
     if not user_tokens:
         return jsonify({"error": "Not authenticated"}), 401
-    if not refresh_token(user_id, user_tokens):
+    if not refresh_token_if_needed(user_id, user_tokens):
         return jsonify({"error": "Refresh token failed"}), 500
     access_token = user_tokens["access_token"]
     url = "https://www.strava.com/api/v3/athlete/activities"
@@ -211,7 +222,7 @@ def grab_activities():
 
     activities = []
     start_time = time.time()
-    while time.time()-start_time < 30:
+    while time.time() - start_time < 30:
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code != 200:
             break
