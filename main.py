@@ -8,7 +8,6 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 load_dotenv()
-
 app = Flask(__name__)
 
 DEFAULT_CLIENT_ID = os.getenv("CLIENT_ID")
@@ -18,6 +17,7 @@ CALLBACK_URL = os.getenv("CALLBACK_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 
+# DB init
 try:
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -56,16 +56,12 @@ def home():
 @app.route("/auth")
 def authorize():
     client_id = request.args.get("client_id", DEFAULT_CLIENT_ID)
-    if not client_id or not CALLBACK_URL:
-        return jsonify({"error": "Missing OAuth configuration"}), 500
-    url = (
-        "https://www.strava.com/oauth/authorize"
-        f"?client_id={client_id}"
-        "&response_type=code"
-        f"&redirect_uri={CALLBACK_URL}/auth/callback"
-        "&scope=activity:read_all,activity:write"
-        "&approval_prompt=auto"
-    )
+    url = (f"https://www.strava.com/oauth/authorize"
+           f"?client_id={client_id}"
+           f"&response_type=code"
+           f"&redirect_uri={CALLBACK_URL}/auth/callback"
+           f"&scope=activity:read_all,activity:write"
+           f"&approval_prompt=auto")
     return redirect(url)
 
 
@@ -79,18 +75,20 @@ def callback():
         "grant_type": "authorization_code"
     })
     if r.status_code != 200:
-        return jsonify({"error": "Token exchange failed", "details": r.json()}), 400
+        return jsonify({"error": "Token exchange failed"}), 400
     tokens = r.json()
-    store_tokens(tokens["athlete"]["id"],
-                 tokens["access_token"],
-                 tokens["refresh_token"],
-                 tokens["expires_at"])
-    return redirect("/success")
+    user_id = tokens["athlete"]["id"]
+    store_tokens(user_id, tokens["access_token"],
+                 tokens["refresh_token"], tokens["expires_at"])
+    return redirect(f"/success?user_id={user_id}")
 
 
 @app.route("/success")
 def success():
-    return render_template("success.html")
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "user_id missing"}), 400
+    return render_template("success.html", user_id=user_id)
 
 
 @app.route("/donate-data", methods=["GET"])
@@ -102,7 +100,7 @@ def donate_data():
         UPDATE users SET give_data = TRUE WHERE user_id = %s
     ''', (user_id,))
     conn.commit()
-    return jsonify({"message": "Data donation enabled. You can now use /grab-activities."})
+    return jsonify({"message": "Data donation enabled"})
 
 
 @app.route("/setup-integration", methods=["GET"])
@@ -115,6 +113,63 @@ def setup_integration():
     ''', (user_id,))
     conn.commit()
     return register_webhook_internal()
+
+
+@app.route("/grab-activities", methods=["GET"])
+def grab_activities():
+    user_id_str = request.args.get("user_id")
+    if not user_id_str:
+        return jsonify({"error": "User ID required"}), 400
+    try:
+        user_id = int(user_id_str)
+    except:
+        return jsonify({"error": "Invalid user ID"}), 400
+    user_tokens = get_tokens(user_id)
+    if not user_tokens:
+        return jsonify({"error": "Not authenticated"}), 401
+    if not refresh_token_if_needed(user_id, user_tokens):
+        return jsonify({"error": "Refresh token failed"}), 500
+
+    # fetch activities
+    headers = {"Authorization": f"Bearer {user_tokens['access_token']}"}
+    url = "https://www.strava.com/api/v3/athlete/activities"
+    params = {"per_page": 100, "page": 1}
+    activities = []
+    start = time.time()
+    while time.time() - start < 30:
+        resp = requests.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            break
+        chunk = resp.json()
+        if not chunk:
+            break
+        activities.extend(chunk)
+        params["page"] += 1
+
+    run_activities = [{
+        "name": x["name"],
+        "link": f"https://www.strava.com/activities/{x['id']}",
+        "polyline": x.get("map", {}).get("summary_polyline", "")
+    } for x in activities if x.get("type") == "Run" and x.get("map", {}).get("summary_polyline")]
+
+    # store JSON in /tmp
+    fname = f"strava_runs_{user_id}.json"
+    path = os.path.join("/tmp", fname)
+    with open(path, "w") as f:
+        json.dump(run_activities, f, indent=4)
+    return jsonify({"message": "Fetched",
+                    "count": len(run_activities),
+                    "file_url": f"/download-json?user_id={user_id}"})
+
+
+@app.route("/download-json", methods=["GET"])
+def download_json():
+    user_id = request.args.get("user_id")
+    fname = f"strava_runs_{user_id}.json"
+    path = os.path.join("/tmp", fname)
+    if not os.path.exists(path):
+        return jsonify({"error": "File not found"}), 404
+    return send_file(path, as_attachment=True)
 
 
 @app.route("/webhook", methods=["GET", "POST"])
@@ -133,64 +188,45 @@ def webhook():
     return "OK", 200
 
 
-@app.route("/grab-activities", methods=["GET"])
-def grab_activities():
-    user_id_str = request.args.get("user_id")
-    if not user_id_str:
-        return jsonify({"error": "User ID required"}), 400
-    try:
-        user_id = int(user_id_str)
-    except ValueError:
-        return jsonify({"error": "Invalid user ID"}), 400
-    user_tokens = get_tokens(user_id)
-    if not user_tokens:
-        return jsonify({"error": "Not authenticated"}), 401
-    if not refresh_token_if_needed(user_id, user_tokens):
-        return jsonify({"error": "Refresh token failed"}), 500
-
-    access_token = user_tokens["access_token"]
-    url = "https://www.strava.com/api/v3/athlete/activities"
-    headers = {"Authorization": "Bearer " + access_token}
-    params = {"per_page": 100, "page": 1}
-    activities = []
-    start_time = time.time()
-    while time.time() - start_time < 30:
-        resp = requests.get(url, headers=headers, params=params, timeout=5)
-        if resp.status_code != 200:
-            break
-        data = resp.json()
-        if not data:
-            break
-        activities.extend(data)
-        params["page"] += 1
-
-    run_activities = [{
-        "name": x["name"],
-        "link": "https://www.strava.com/activities/" + str(x["id"]),
-        "polyline": x.get("map", {}).get("summary_polyline", "")
-    } for x in activities if x.get("type") == "Run" and x.get("map", {}).get("summary_polyline")]
-
-    fname = f"strava_runs_{user_id}.json"
-    path = os.path.join("/tmp", fname)
-    with open(path, "w") as f:
-        json.dump(run_activities, f, indent=4)
-    return jsonify({
-        "message": "Activities fetched",
-        "activities_count": len(run_activities),
-        "file_url": f"/download-json?user_id={user_id}"
-    })
+@app.route("/register-webhook", methods=["POST"])
+def register_webhook():
+    return register_webhook_internal()
 
 
-@app.route("/download-json", methods=["GET"])
-def download_json():
-    user_id = request.args.get("user_id")
-    if not user_id:
-        return jsonify({"error": "User ID required"}), 400
-    fname = f"strava_runs_{user_id}.json"
-    path = os.path.join("/tmp", fname)
-    if not os.path.exists(path):
-        return jsonify({"error": "File not found"}), 404
-    return send_file(path, as_attachment=True)
+def register_webhook_internal():
+    payload = {
+        "client_id": DEFAULT_CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "callback_url": f"{CALLBACK_URL}/webhook",
+        "verify_token": VERIFY_TOKEN
+    }
+    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+    r = requests.post("https://www.strava.com/api/v3/push_subscriptions",
+                      headers=headers, data=payload)
+    if r.status_code == 201:
+        return jsonify(r.json())
+    return jsonify({"error": r.json()}), r.status_code
+
+
+def fetch_and_store_activity(owner_id, activity_id, user_tokens):
+    act_url = f"https://www.strava.com/api/v3/activities/{activity_id}"
+    headers = {"Authorization": f"Bearer {user_tokens['access_token']}"}
+    act_req = requests.get(act_url, headers=headers)
+    if act_req.status_code == 200:
+        act_data = act_req.json()
+        if user_tokens["add_integration"]:
+            desc = act_data.get("description", "")
+            new_desc = (desc + "\n" if desc else "") + \
+                "Data managed by runnershigh.io"
+            requests.put(act_url, headers=headers,
+                         json={"description": new_desc})
+        if user_tokens["give_data"]:
+            cursor.execute('''
+                INSERT INTO user_activities (user_id, activity_id, name, distance, start_date)
+                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
+            ''', (owner_id, activity_id, act_data.get("name", ""),
+                  act_data.get("distance", 0), act_data.get("start_date")))
+            conn.commit()
 
 
 def store_tokens(user_id, access_token, refresh_token, expires_at):
@@ -227,47 +263,6 @@ def refresh_token_if_needed(user_id, tokens):
             return True
         return False
     return True
-
-
-def fetch_and_store_activity(owner_id, activity_id, user_tokens):
-    act_url = f"https://www.strava.com/api/v3/activities/{activity_id}"
-    headers = {"Authorization": "Bearer " + user_tokens["access_token"]}
-    act_req = requests.get(act_url, headers=headers)
-    if act_req.status_code == 200:
-        act_data = act_req.json()
-        if user_tokens["add_integration"]:
-            desc = act_data.get("description", "")
-            new_desc = (desc + "\n" if desc else "") + \
-                "Data managed by runnershigh.io"
-            requests.put(act_url, headers=headers,
-                         json={"description": new_desc})
-        if user_tokens["give_data"]:
-            cursor.execute('''
-                INSERT INTO user_activities (user_id, activity_id, name, distance, start_date)
-                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
-            ''', (owner_id, activity_id, act_data.get("name", ""),
-                  act_data.get("distance", 0), act_data.get("start_date")))
-            conn.commit()
-
-
-@app.route("/register-webhook", methods=["POST"])
-def register_webhook():
-    return register_webhook_internal()
-
-
-def register_webhook_internal():
-    payload = {
-        "client_id": DEFAULT_CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "callback_url": f"{CALLBACK_URL}/webhook",
-        "verify_token": VERIFY_TOKEN
-    }
-    headers = {"Authorization": "Bearer " + ACCESS_TOKEN}
-    r = requests.post("https://www.strava.com/api/v3/push_subscriptions",
-                      headers=headers, data=payload)
-    if r.status_code == 201:
-        return jsonify(r.json())
-    return jsonify({"error": r.json()}), r.status_code
 
 
 if __name__ == "__main__":
