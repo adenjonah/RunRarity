@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, redirect, render_template, send_file
+from flask import Flask, request, jsonify, redirect, send_file
 import os
 import time
 import json
@@ -16,10 +16,10 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Track fetch progress in memory: fetch_status[user_id] = { "file_path": "...", "in_progress": bool, "done": bool }
+# Track fetch progress: { user_id: {"file_path": "", "in_progress": bool, "done": bool} }
 fetch_status = {}
 
-# DB init
+# Init database
 try:
     conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -44,7 +44,7 @@ def index():
   <head><title>Donate Activities</title></head>
   <body>
     <h1>Donate Activities</h1>
-    <p>Click below to authenticate with Strava and donate your run activities (with map).</p>
+    <p>Click below to authenticate with Strava.</p>
     <form action="/auth" method="get">
       <button type="submit">Donate Activities</button>
     </form>
@@ -57,6 +57,7 @@ def index():
 def authorize():
     if not CLIENT_ID or not CALLBACK_URL:
         return jsonify({"error": "Missing Strava config"}), 500
+
     url = (f"https://www.strava.com/oauth/authorize"
            f"?client_id={CLIENT_ID}"
            f"&response_type=code"
@@ -70,7 +71,7 @@ def authorize():
 def callback():
     code = request.args.get("code")
     if not code:
-        return jsonify({"error": "No code returned"}), 400
+        return jsonify({"error": "No code returned from Strava"}), 400
 
     # Exchange code for tokens
     r = requests.post("https://www.strava.com/api/v3/oauth/token", data={
@@ -91,53 +92,54 @@ def callback():
     fetch_status[user_id] = {"file_path": "",
                              "in_progress": False, "done": False}
 
-    # Render the countdown page directly
+    # Redirect user to a page with two buttons
+    return redirect(f"/post-auth?user_id={user_id}")
+
+
+@app.route("/post-auth")
+def post_auth():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Missing user_id"}), 400
+
     return f"""
 <html>
   <head>
-    <title>Fetching Activities</title>
+    <title>Donate Activities</title>
     <script>
-      let countdown = 30;
       let userId = '{user_id}';
-      let intervalId;
-      let started = false;
+      let pollTimer = null;
 
-      function start() {{
-        if(!started) {{
-          started = true;
-          fetch(`/start-fetch?user_id=${{userId}}`);
-        }}
-        intervalId = setInterval(() => {{
-          if(countdown <= 0) {{
-            document.getElementById('timer').innerHTML = "Time's up!";
-            clearInterval(intervalId);
-            checkDone();
-            return;
-          }}
-          countdown--;
-          document.getElementById(
-              'timer').innerHTML = countdown + "s remaining";
-          checkDone();
-        }}, 1000);
+      function startFetch() {{
+        fetch(`/start-fetch?user_id=${{userId}}`)
+          .then(r => r.json())
+          .then(() => {{
+            console.log("Fetch started");
+            pollTimer = setInterval(checkStatus, 1000);
+          }});
       }}
 
-      function checkDone() {{
+      function checkStatus() {{
         fetch(`/fetch-status?user_id=${{userId}}`)
-        .then(r => r.json())
-        .then(data => {{
-          if(data.done) {{
-            clearInterval(intervalId);
-            document.getElementById('timer').innerHTML = "Fetch complete!";
-            document.getElementById('downloadBtn').style.display = "inline";
-          }}
-        }});
+          .then(r => r.json())
+          .then(data => {{
+            if(data.done) {{
+              clearInterval(pollTimer);
+              document.getElementById('downloadBtn').disabled = false;
+            }}
+          }});
+      }}
+
+      function downloadFile() {{
+        window.location = `/download-file?user_id=${{userId}}`;
       }}
     </script>
   </head>
-  <body onload="start()">
-    <h1>Fetching your run activities</h1>
-    <p id="timer">Starting...</p>
-    <button id="downloadBtn" style="display:none" onclick="window.location='/download-file?user_id={user_id}'">Download JSON</button>
+  <body>
+    <h1>Donate Activities (Runs with Maps)</h1>
+    <p>Click "Start Fetch" to begin retrieving your activities.</p>
+    <button onclick="startFetch()">Start Fetch</button>
+    <button id="downloadBtn" onclick="downloadFile()" disabled>Download JSON</button>
   </body>
 </html>
 """
@@ -153,12 +155,13 @@ def start_fetch():
         fetch_status[user_id] = {"file_path": "",
                                  "in_progress": False, "done": False}
 
-    if not fetch_status[user_id]["in_progress"] and not fetch_status[user_id]["done"]:
+    # Only start if not already in progress/done
+    if (not fetch_status[user_id]["in_progress"]) and (not fetch_status[user_id]["done"]):
         fetch_status[user_id]["in_progress"] = True
         t = threading.Thread(target=do_fetch, args=(user_id,))
         t.start()
 
-    return jsonify({"message": "OK"})
+    return jsonify({"message": "Fetch initiated"})
 
 
 @app.route("/fetch-status")
@@ -184,18 +187,18 @@ def download_file():
 
 def do_fetch(user_id):
     """
-    Background worker: fetch runs with map for up to 29s, store in /tmp,
-    then mark done in fetch_status.
+    Background thread: fetch runs (with map) for up to 29 seconds.
+    Write them to /tmp. Mark status done.
     """
     try:
-        activities = fetch_activities(user_id)
+        acts = fetch_activities(user_id)
         fname = f"strava_runs_{user_id}.json"
         path = os.path.join("/tmp", fname)
         with open(path, "w") as f:
-            json.dump(activities, f, indent=4)
+            json.dump(acts, f, indent=4)
         fetch_status[user_id]["file_path"] = path
     except Exception as e:
-        print("Fetch error:", e)
+        print(f"Error fetching for user {user_id}:", e)
     finally:
         fetch_status[user_id]["in_progress"] = False
         fetch_status[user_id]["done"] = True
@@ -212,45 +215,29 @@ def fetch_activities(user_id):
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
     url = "https://www.strava.com/api/v3/athlete/activities"
     params = {"per_page": 100, "page": 1}
-    out = []
-    start = time.time()
-    while time.time() - start < 29:
+    results = []
+    start_time = time.time()
+
+    while time.time() - start_time < 29:  # stop after ~29s
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code != 200:
             break
         chunk = resp.json()
         if not chunk:
             break
-        out.extend(chunk)
+        results.extend(chunk)
         params["page"] += 1
 
-    # Filter runs w/ summary_polyline
-    runs = []
-    for act in out:
-        if act.get("type") == "Run" and act.get("map", {}).get("summary_polyline"):
-            runs.append({
-                "name": act["name"],
-                "link": f"https://www.strava.com/activities/{act['id']}",
-                "polyline": act["map"]["summary_polyline"]
+    # Only runs with summary_polyline
+    run_data = []
+    for r in results:
+        if r.get("type") == "Run" and r.get("map", {}).get("summary_polyline"):
+            run_data.append({
+                "name": r["name"],
+                "link": f"https://www.strava.com/activities/{r['id']}",
+                "polyline": r["map"]["summary_polyline"]
             })
-    return runs
-
-
-def refresh_token_if_needed(user_id, tokens):
-    if tokens["expires_at"] < time.time():
-        r = requests.post("https://www.strava.com/api/v3/oauth/token", data={
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
-            "grant_type": "refresh_token",
-            "refresh_token": tokens["refresh_token"]
-        })
-        if r.status_code == 200:
-            new_tokens = r.json()
-            store_tokens(user_id, new_tokens["access_token"],
-                         new_tokens["refresh_token"], new_tokens["expires_at"])
-            return True
-        return False
-    return True
+    return run_data
 
 
 def store_tokens(user_id, access_token, refresh_token, expires_at):
@@ -268,6 +255,25 @@ def store_tokens(user_id, access_token, refresh_token, expires_at):
 def get_tokens(user_id):
     cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
     return cursor.fetchone()
+
+
+def refresh_token_if_needed(user_id, tokens):
+    if tokens["expires_at"] < time.time():
+        r = requests.post("https://www.strava.com/api/v3/oauth/token", data={
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "grant_type": "refresh_token",
+            "refresh_token": tokens["refresh_token"]
+        })
+        if r.status_code == 200:
+            new_tokens = r.json()
+            store_tokens(user_id,
+                         new_tokens["access_token"],
+                         new_tokens["refresh_token"],
+                         new_tokens["expires_at"])
+            return True
+        return False
+    return True
 
 
 if __name__ == "__main__":
