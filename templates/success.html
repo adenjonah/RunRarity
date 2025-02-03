@@ -1,15 +1,11 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Setup Successful</title>
-  </head>
+<!-- success.html -->
+<html>
   <body>
-    <h1>Strava Setup Complete!</h1>
+    <h2>Success!</h2>
+    <p>Your user ID is {{ user_id }}</p>
     <p>
-      You have successfully authenticated with Strava. We'll take care of the
-      jokes on your future activities!
+      <a href="/donate-data?user_id={{ user_id }}">Donate Data</a> |
+      <a href="/setup-integration?user_id={{ user_id }}">Setup Integration</a>
     </p>
   </body>
 </html>

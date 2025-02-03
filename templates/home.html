@@ -1,43 +1,7 @@
-<!DOCTYPE html>
+<!-- home.html -->
 <html>
-  <head>
-    <title>Home</title>
-  </head>
   <body>
-    <h1>Strava Integration</h1>
-    <p>Client ID: <span id="clientId">{{ client_id }}</span></p>
-    <form id="prefForm" method="POST" action="/preferences">
-      <input type="hidden" name="user_id" value="YOUR_USER_ID" />
-      <label>
-        <input type="checkbox" name="add_integration" value="true" />
-        Toggle Integration
-      </label>
-      <label>
-        <input type="checkbox" name="give_data" value="true" />
-        Give Data
-      </label>
-      <button type="submit">Save</button>
-    </form>
-    <button id="fetchBtn">Grab Activities</button>
-    <div id="countdown" style="display: none">
-      Fetching data in <span id="timer">30</span> seconds...
-    </div>
-
-    <script>
-      const fetchBtn = document.getElementById("fetchBtn");
-      const countdown = document.getElementById("countdown");
-      const timerSpan = document.getElementById("timer");
-
-      fetchBtn.onclick = function () {
-        let timeLeft = 30;
-        countdown.style.display = "block";
-        const interval = setInterval(() => {
-          timeLeft--;
-          timerSpan.textContent = timeLeft;
-          if (timeLeft <= 0) clearInterval(interval);
-        }, 1000);
-        window.location.href = "/grab-activities?user_id=YOUR_USER_ID";
-      };
-    </script>
+    <h1>Strava Integration Demo</h1>
+    <a href="/auth?client_id={{client_id}}">Authenticate with Strava</a>
   </body>
 </html>
