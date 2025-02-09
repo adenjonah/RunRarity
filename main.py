@@ -36,6 +36,32 @@ CREATE TABLE IF NOT EXISTS users (
 ''')
 conn.commit()
 
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS activities (
+    user_id BIGINT REFERENCES users(user_id),
+    activity_id BIGINT PRIMARY KEY,
+    name TEXT,
+    distance FLOAT,
+    moving_time INT,
+    elapsed_time INT,
+    total_elevation_gain FLOAT,
+    type TEXT,
+    start_date TIMESTAMP,
+    start_latitude FLOAT,
+    start_longitude FLOAT,
+    end_latitude FLOAT,
+    end_longitude FLOAT,
+    polyline TEXT,
+    average_speed FLOAT,
+    max_speed FLOAT,
+    average_heartrate FLOAT,
+    max_heartrate FLOAT,
+    calories FLOAT,
+    UNIQUE(user_id, activity_id)
+)
+''')
+conn.commit()
+
 
 @app.route("/")
 def index():
@@ -274,6 +300,74 @@ def refresh_token_if_needed(user_id, tokens):
             return True
         return False
     return True
+
+
+@app.route("/api/process-data")
+def process_data():
+    user_id = request.args.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Missing user_id"}), 400
+
+    tokens = get_tokens(user_id)
+    if not tokens:
+        return jsonify({"error": "User not authenticated"}), 401
+
+    if not refresh_token_if_needed(user_id, tokens):
+        return jsonify({"error": "Token refresh failed"}), 401
+
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    url = "https://www.strava.com/api/v3/athlete/activities"
+    params = {"per_page": 100, "page": 1}
+    activities = []
+
+    while len(activities) < 1000:
+        resp = requests.get(url, headers=headers, params=params, timeout=5)
+        if resp.status_code != 200:
+            break
+        chunk = resp.json()
+        if not chunk:
+            break
+        activities.extend(chunk)
+        params["page"] += 1
+
+    # Filter and store activities
+    for activity in activities:
+        if activity.get("type") == "Run" and activity.get("map", {}).get("summary_polyline"):
+            store_activity(user_id, activity)
+
+    return jsonify({"message": "Data processing complete"})
+
+
+def store_activity(user_id, activity):
+    cursor.execute('''
+        INSERT INTO activities (user_id, activity_id, name, distance, moving_time, elapsed_time, 
+                               total_elevation_gain, type, start_date, start_latitude, start_longitude, 
+                               end_latitude, end_longitude, polyline, average_speed, max_speed, 
+                               average_heartrate, max_heartrate, calories)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (user_id, activity_id) DO NOTHING
+    ''', (
+        user_id,
+        activity["id"],
+        activity["name"],
+        activity["distance"],
+        activity["moving_time"],
+        activity["elapsed_time"],
+        activity["total_elevation_gain"],
+        activity["type"],
+        activity["start_date"],
+        activity.get("start_latlng", [None, None])[0],
+        activity.get("start_latlng", [None, None])[1],
+        activity.get("end_latlng", [None, None])[0],
+        activity.get("end_latlng", [None, None])[1],
+        activity["map"]["summary_polyline"],
+        activity["average_speed"],
+        activity["max_speed"],
+        activity.get("average_heartrate"),
+        activity.get("max_heartrate"),
+        activity.get("calories")
+    ))
+    conn.commit()
 
 
 if __name__ == "__main__":
