@@ -69,7 +69,13 @@ conn.commit()
 
 @app.route("/")
 def index():
-    return """
+    code = request.args.get("code")
+    if code:
+        # If there's a code, handle the callback
+        return handle_callback(code)
+    else:
+        # Otherwise, show the index page
+        return """
 <html>
   <head><title>Donate Activities</title></head>
   <body>
@@ -93,7 +99,7 @@ def authorize():
     url = (f"https://www.strava.com/oauth/authorize"
            f"?client_id={CLIENT_ID}"
            f"&response_type=code"
-           f"&redirect_uri={CALLBACK_URL}"
+           f"&redirect_uri={CALLBACK_URL}/auth/callback"
            f"&scope=activity:read_all"
            f"&approval_prompt=auto")
     return redirect(url)
@@ -383,6 +389,31 @@ def store_activity(user_id, activity):
         activity.get("calories")
     ))
     conn.commit()
+
+
+def handle_callback(code):
+    logging.info("Exchanging code for tokens")
+    r = requests.post("https://www.strava.com/api/v3/oauth/token", data={
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "code": code,
+        "grant_type": "authorization_code"
+    })
+    if r.status_code != 200:
+        logging.error("Token exchange failed")
+        return jsonify({"error": "Token exchange failed", "details": r.json()}), 400
+
+    tokens = r.json()
+    user_id = tokens["athlete"]["id"]
+    store_tokens(user_id, tokens["access_token"],
+                 tokens["refresh_token"], tokens["expires_at"])
+
+    # Initialize fetch status
+    fetch_status[user_id] = {"file_path": "",
+                             "in_progress": False, "done": False}
+
+    logging.info(f"User {user_id} authenticated successfully")
+    return redirect(f"/post-auth?user_id={user_id}")
 
 
 if __name__ == "__main__":
