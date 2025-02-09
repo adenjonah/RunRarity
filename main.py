@@ -360,35 +360,39 @@ def process_data():
 
 
 def store_activity(user_id, activity):
-    cursor.execute('''
-        INSERT INTO activities (user_id, activity_id, name, distance, moving_time, elapsed_time, 
-                               total_elevation_gain, type, start_date, start_latitude, start_longitude, 
-                               end_latitude, end_longitude, polyline, average_speed, max_speed, 
-                               average_heartrate, max_heartrate, calories)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (user_id, activity_id) DO NOTHING
-    ''', (
-        user_id,
-        activity["id"],
-        activity["name"],
-        activity["distance"],
-        activity["moving_time"],
-        activity["elapsed_time"],
-        activity["total_elevation_gain"],
-        activity["type"],
-        activity["start_date"],
-        activity.get("start_latlng", [None, None])[0],
-        activity.get("start_latlng", [None, None])[1],
-        activity.get("end_latlng", [None, None])[0],
-        activity.get("end_latlng", [None, None])[1],
-        activity["map"]["summary_polyline"],
-        activity["average_speed"],
-        activity["max_speed"],
-        activity.get("average_heartrate"),
-        activity.get("max_heartrate"),
-        activity.get("calories")
-    ))
-    conn.commit()
+    try:
+        cursor.execute('''
+            INSERT INTO activities (user_id, activity_id, name, distance, moving_time, elapsed_time, 
+                                   total_elevation_gain, type, start_date, start_latitude, start_longitude, 
+                                   end_latitude, end_longitude, polyline, average_speed, max_speed, 
+                                   average_heartrate, max_heartrate, calories)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, activity_id) DO NOTHING
+        ''', (
+            user_id,
+            activity["id"],
+            activity["name"],
+            activity["distance"],
+            activity["moving_time"],
+            activity["elapsed_time"],
+            activity["total_elevation_gain"],
+            activity["type"],
+            activity["start_date"],
+            activity.get("start_latlng", [None, None])[0],
+            activity.get("start_latlng", [None, None])[1],
+            activity.get("end_latlng", [None, None])[0],
+            activity.get("end_latlng", [None, None])[1],
+            activity["map"]["summary_polyline"],
+            activity["average_speed"],
+            activity["max_speed"],
+            activity.get("average_heartrate"),
+            activity.get("max_heartrate"),
+            activity.get("calories")
+        ))
+        conn.commit()
+        logging.info(f"Activity {activity['id']} for user {user_id} stored successfully.")
+    except Exception as e:
+        logging.error(f"Failed to store activity {activity['id']} for user {user_id}: {e}")
 
 
 def handle_callback(code):
