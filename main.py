@@ -7,6 +7,7 @@ import threading
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
 app = Flask(__name__)
@@ -15,6 +16,9 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 # Track fetch progress: { user_id: {"file_path": "", "in_progress": bool, "done": bool} }
 fetch_status = {}
@@ -82,8 +86,10 @@ def index():
 @app.route("/auth")
 def authorize():
     if not CLIENT_ID or not CALLBACK_URL:
+        logging.error("Missing Strava config")
         return jsonify({"error": "Missing Strava config"}), 500
 
+    logging.info("Redirecting to Strava OAuth URL")
     url = (f"https://www.strava.com/oauth/authorize"
            f"?client_id={CLIENT_ID}"
            f"&response_type=code"
@@ -97,9 +103,10 @@ def authorize():
 def callback():
     code = request.args.get("code")
     if not code:
+        logging.error("No code returned from Strava")
         return jsonify({"error": "No code returned from Strava"}), 400
 
-    # Exchange code for tokens
+    logging.info("Exchanging code for tokens")
     r = requests.post("https://www.strava.com/api/v3/oauth/token", data={
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
@@ -107,6 +114,7 @@ def callback():
         "grant_type": "authorization_code"
     })
     if r.status_code != 200:
+        logging.error("Token exchange failed")
         return jsonify({"error": "Token exchange failed", "details": r.json()}), 400
 
     tokens = r.json()
@@ -118,7 +126,7 @@ def callback():
     fetch_status[user_id] = {"file_path": "",
                              "in_progress": False, "done": False}
 
-    # Redirect user to a page with two buttons
+    logging.info(f"User {user_id} authenticated successfully")
     return redirect(f"/post-auth?user_id={user_id}")
 
 
@@ -306,13 +314,17 @@ def refresh_token_if_needed(user_id, tokens):
 def process_data():
     user_id = request.args.get("user_id")
     if not user_id:
+        logging.error("Missing user_id")
         return jsonify({"error": "Missing user_id"}), 400
 
+    logging.info(f"Processing data for user {user_id}")
     tokens = get_tokens(user_id)
     if not tokens:
+        logging.error("User not authenticated")
         return jsonify({"error": "User not authenticated"}), 401
 
     if not refresh_token_if_needed(user_id, tokens):
+        logging.error("Token refresh failed")
         return jsonify({"error": "Token refresh failed"}), 401
 
     headers = {"Authorization": f"Bearer {tokens['access_token']}"}
@@ -321,8 +333,10 @@ def process_data():
     activities = []
 
     while len(activities) < 1000:
+        logging.info(f"Fetching page {params['page']} for user {user_id}")
         resp = requests.get(url, headers=headers, params=params, timeout=5)
         if resp.status_code != 200:
+            logging.error("Failed to fetch activities")
             break
         chunk = resp.json()
         if not chunk:
@@ -335,6 +349,7 @@ def process_data():
         if activity.get("type") == "Run" and activity.get("map", {}).get("summary_polyline"):
             store_activity(user_id, activity)
 
+    logging.info(f"Data processing complete for user {user_id}")
     return jsonify({"message": "Data processing complete"})
 
 
